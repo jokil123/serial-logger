@@ -30,7 +30,7 @@
 
 #define SD_WRITE_TASK_STACK_SIZE 4096 // SD card + FATFS needs more stack
 // #define SD_WRITE_BUF_SIZE 512         // How many bytes to buffer before writing
-#define SD_WRITE_BUF_SIZE 10    // How many bytes to buffer before writing
+#define SD_WRITE_BUF_SIZE 64    // How many bytes to buffer before writing
 #define SHARED_QUEUE_SIZE 1024  // Max bytes to hold in queue between tasks
 #define SD_WRITE_TIMEOUT_MS 500 // Write to SD if no new data for this long
 
@@ -192,6 +192,7 @@ static void sd_write_task(void *pvParameters)
         buffer_byte_cursor++;
 
         bool writeTimeoutExceeded = last_sd_write_time - xTaskGetTickCount() > pdMS_TO_TICKS(SD_WRITE_TIMEOUT_MS);
+        ESP_LOGI(TAG_SD, "writeTimeoutExceeded: %d, last_sd_write_time: %ld, xTaskGetTickCount: %ld", writeTimeoutExceeded, pdTICKS_TO_MS(last_sd_write_time), pdTICKS_TO_MS(xTaskGetTickCount()));
 
         if (buffer_byte_cursor < SD_WRITE_BUF_SIZE && !writeTimeoutExceeded)
         {
