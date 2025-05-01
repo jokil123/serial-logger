@@ -12,9 +12,9 @@
 #include "sdmmc_cmd.h"   // Include for SD card commands
 
 // UART Config
-#define UART_PORT_NUM UART_NUM_0
-#define UART_TX_PIN GPIO_NUM_1
-#define UART_RX_PIN GPIO_NUM_3
+#define UART_PORT_NUM UART_NUM_2
+#define UART_TX_PIN GPIO_NUM_17
+#define UART_RX_PIN GPIO_NUM_16
 
 #define UART_BAUD_RATE 115200
 #define TASK_STACK_SIZE 2048
