@@ -29,9 +29,10 @@
 #define PIN_NUM_CS GPIO_NUM_5
 
 #define SD_WRITE_TASK_STACK_SIZE 4096 // SD card + FATFS needs more stack
-#define SD_WRITE_BUF_SIZE 512         // How many bytes to buffer before writing
-#define SHARED_QUEUE_SIZE 1024        // Max bytes to hold in queue between tasks
-#define SD_WRITE_TIMEOUT_MS 500       // Write to SD if no new data for this long
+// #define SD_WRITE_BUF_SIZE 512         // How many bytes to buffer before writing
+#define SD_WRITE_BUF_SIZE 10    // How many bytes to buffer before writing
+#define SHARED_QUEUE_SIZE 1024  // Max bytes to hold in queue between tasks
+#define SD_WRITE_TIMEOUT_MS 500 // Write to SD if no new data for this long
 
 static const char *TAG_UART = "UART";
 static const char *TAG_SD = "SD";
@@ -105,6 +106,7 @@ esp_err_t init_sd_card(void)
     ESP_LOGI(TAG_SD, "Initializing SD card");
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.max_freq_khz = SDMMC_FREQ_PROBING;
     // host.max_freq_khz = 10000;
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = PIN_NUM_MOSI,
@@ -151,6 +153,7 @@ static void sd_write_task(void *pvParameters)
 {
     ESP_LOGI(TAG_UART, "sd_write_task started on core %d", xPortGetCoreID());
     uint8_t write_buffer[SD_WRITE_BUF_SIZE];
+    TickType_t last_sd_write_time = xTaskGetTickCount();
     size_t buffer_byte_cursor = 0;
     FILE *f = NULL;
 
@@ -168,7 +171,7 @@ static void sd_write_task(void *pvParameters)
     {
         vTaskDelay(pdMS_TO_TICKS(10));
 
-        TickType_t wait_time = pdMS_TO_TICKS(SD_WRITE_TIMEOUT_MS);
+        TickType_t wait_time = SD_WRITE_TIMEOUT_MS;
 
         // no bytes in buffer
         if (buffer_byte_cursor == 0)
@@ -176,21 +179,27 @@ static void sd_write_task(void *pvParameters)
             wait_time = portMAX_DELAY;
         }
 
+        ESP_LOGI(TAG_SD, "Waiting %ld ms", pdTICKS_TO_MS(wait_time));
         BaseType_t received = xQueueReceive(uart_to_sd_queue, &write_buffer[buffer_byte_cursor], wait_time);
+        ESP_LOGI(TAG_SD, "Received character through queue or timeout (%d)", received);
 
         if (received != pdPASS)
         {
+            ESP_LOGI(TAG_SD, "No character received");
             continue;
         }
 
         buffer_byte_cursor++;
 
-        if (buffer_byte_cursor < SD_WRITE_BUF_SIZE)
+        bool writeTimeoutExceeded = last_sd_write_time - xTaskGetTickCount() > pdMS_TO_TICKS(SD_WRITE_TIMEOUT_MS);
+
+        if (buffer_byte_cursor < SD_WRITE_BUF_SIZE && !writeTimeoutExceeded)
         {
+            ESP_LOGI(TAG_SD, "Wrote character to buffer (%c)", write_buffer[buffer_byte_cursor]);
             continue;
         }
 
-        ESP_LOGD(TAG_SD, "Write buffer full, writing to SD card...");
+        ESP_LOGI(TAG_SD, "Write buffer full, writing to SD card...");
         size_t written = fwrite(write_buffer, 1, buffer_byte_cursor, f);
         if (written != buffer_byte_cursor)
         {
@@ -200,6 +209,7 @@ static void sd_write_task(void *pvParameters)
         {
             fflush(f);
         }
+        last_sd_write_time = xTaskGetTickCount();
         buffer_byte_cursor = 0;
     }
 
@@ -227,13 +237,13 @@ void app_main()
     uart_init();
     if (init_sd_card() != ESP_OK)
     {
-        ESP_LOGE(TAG_SD, "SD card init failed. Terminating task.");
+        ESP_LOGE("APP_MAIN", "SD card init failed. Terminating task.");
         vTaskDelete(NULL);
         return;
     }
 
-    xTaskCreate(sd_write_task, "sd_write_task", SD_WRITE_TASK_STACK_SIZE, NULL, 5, NULL);
     xTaskCreate(uart_rx_task, "uart_rx_task", TASK_STACK_SIZE, NULL, 6, NULL);
+    xTaskCreate(sd_write_task, "sd_write_task", SD_WRITE_TASK_STACK_SIZE, NULL, 5, NULL);
 
     ESP_LOGI(TAG_UART, "app_main finished setup.");
 }
