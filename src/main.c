@@ -30,7 +30,7 @@
 
 #define SD_WRITE_TASK_STACK_SIZE 4096 // SD card + FATFS needs more stack
 // #define SD_WRITE_BUF_SIZE 512         // How many bytes to buffer before writing
-#define SD_WRITE_BUF_SIZE 64    // How many bytes to buffer before writing
+#define SD_WRITE_BUF_SIZE 2048  // How many bytes to buffer before writing
 #define SHARED_QUEUE_SIZE 1024  // Max bytes to hold in queue between tasks
 #define SD_WRITE_TIMEOUT_MS 500 // Write to SD if no new data for this long
 
@@ -73,11 +73,7 @@ static void uart_rx_task(void *pvParameters)
 
         if (len > 0)
         {
-            // ESP_LOGI(TAG_UART, "Received 1 char on UART%d: '%c' (ASCII: %d)", UART_PORT_NUM, received_char, received_char);
-
-            // uart_write_bytes(UART_PORT_NUM, (const char *)&received_char, 1);
-
-            BaseType_t result = xQueueSend(uart_to_sd_queue, &received_char, pdMS_TO_TICKS(10));
+            BaseType_t result = xQueueSend(uart_to_sd_queue, &received_char, pdMS_TO_TICKS(100));
 
             if (result != pdPASS)
             {
@@ -106,8 +102,8 @@ esp_err_t init_sd_card(void)
     ESP_LOGI(TAG_SD, "Initializing SD card");
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.max_freq_khz = SDMMC_FREQ_PROBING;
-    // host.max_freq_khz = 10000;
+    // host.max_freq_khz = SDMMC_FREQ_PROBING;
+    host.max_freq_khz = 5000;
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = PIN_NUM_MOSI,
         .miso_io_num = PIN_NUM_MISO,
@@ -169,49 +165,46 @@ static void sd_write_task(void *pvParameters)
 
     while (1)
     {
-        vTaskDelay(pdMS_TO_TICKS(10));
+        bool writeTimeoutExceeded = xTaskGetTickCount() - last_sd_write_time > pdMS_TO_TICKS(SD_WRITE_TIMEOUT_MS);
 
-        TickType_t wait_time = SD_WRITE_TIMEOUT_MS;
+        if (buffer_byte_cursor >= SD_WRITE_BUF_SIZE || writeTimeoutExceeded)
+        {
+            ESP_LOGI(TAG_SD, "Write buffer full (%d of %d) or timeout (%ld), writing to SD card...", buffer_byte_cursor, SD_WRITE_BUF_SIZE, pdTICKS_TO_MS(xTaskGetTickCount() - last_sd_write_time));
+            size_t written = fwrite(write_buffer, 1, buffer_byte_cursor, f);
+            if (written != buffer_byte_cursor)
+            {
+                ESP_LOGE(TAG_SD, "File write failed! Only wrote %d of %d bytes", written, buffer_byte_cursor);
+            }
+            else
+            {
+                if (fsync(fileno(f)) != 0)
+                {
 
-        // no bytes in buffer
+                    ESP_LOGE(TAG_SD, "fsync failed");
+                }
+            }
+            last_sd_write_time = xTaskGetTickCount();
+            buffer_byte_cursor = 0;
+        }
+
+        TickType_t wait_time = pdMS_TO_TICKS(SD_WRITE_TIMEOUT_MS);
+
         if (buffer_byte_cursor == 0)
         {
             wait_time = portMAX_DELAY;
         }
 
-        ESP_LOGI(TAG_SD, "Waiting %ld ms", pdTICKS_TO_MS(wait_time));
+        // ESP_LOGI(TAG_SD, "Waiting %ld ms", pdTICKS_TO_MS(wait_time));
         BaseType_t received = xQueueReceive(uart_to_sd_queue, &write_buffer[buffer_byte_cursor], wait_time);
-        ESP_LOGI(TAG_SD, "Received character through queue or timeout (%d)", received);
+        // ESP_LOGI(TAG_SD, "Received character through queue or timeout (%d)", received);
 
         if (received != pdPASS)
         {
-            ESP_LOGI(TAG_SD, "No character received");
+            // ESP_LOGI(TAG_SD, "No character received");
             continue;
         }
 
         buffer_byte_cursor++;
-
-        bool writeTimeoutExceeded = last_sd_write_time - xTaskGetTickCount() > pdMS_TO_TICKS(SD_WRITE_TIMEOUT_MS);
-        ESP_LOGI(TAG_SD, "writeTimeoutExceeded: %d, last_sd_write_time: %ld, xTaskGetTickCount: %ld", writeTimeoutExceeded, pdTICKS_TO_MS(last_sd_write_time), pdTICKS_TO_MS(xTaskGetTickCount()));
-
-        if (buffer_byte_cursor < SD_WRITE_BUF_SIZE && !writeTimeoutExceeded)
-        {
-            ESP_LOGI(TAG_SD, "Wrote character to buffer (%c)", write_buffer[buffer_byte_cursor]);
-            continue;
-        }
-
-        ESP_LOGI(TAG_SD, "Write buffer full, writing to SD card...");
-        size_t written = fwrite(write_buffer, 1, buffer_byte_cursor, f);
-        if (written != buffer_byte_cursor)
-        {
-            ESP_LOGE(TAG_SD, "File write failed! Only wrote %d of %d bytes", written, buffer_byte_cursor);
-        }
-        else
-        {
-            fflush(f);
-        }
-        last_sd_write_time = xTaskGetTickCount();
-        buffer_byte_cursor = 0;
     }
 
     ESP_LOGI(TAG_SD, "SD Write task finishing...");
