@@ -30,7 +30,7 @@
 
 #define SD_WRITE_TASK_STACK_SIZE 4096 // SD card + FATFS needs more stack
 // #define SD_WRITE_BUF_SIZE 512         // How many bytes to buffer before writing
-#define SD_WRITE_BUF_SIZE 64    // How many bytes to buffer before writing
+#define SD_WRITE_BUF_SIZE 512   // How many bytes to buffer before writing
 #define SHARED_QUEUE_SIZE 1024  // Max bytes to hold in queue between tasks
 #define SD_WRITE_TIMEOUT_MS 500 // Write to SD if no new data for this long
 
@@ -169,9 +169,7 @@ static void sd_write_task(void *pvParameters)
 
     while (1)
     {
-        vTaskDelay(pdMS_TO_TICKS(10));
-
-        TickType_t wait_time = SD_WRITE_TIMEOUT_MS;
+        TickType_t wait_time = pdMS_TO_TICKS(SD_WRITE_TIMEOUT_MS);
 
         // no bytes in buffer
         if (buffer_byte_cursor == 0)
@@ -191,7 +189,7 @@ static void sd_write_task(void *pvParameters)
 
         buffer_byte_cursor++;
 
-        bool writeTimeoutExceeded = last_sd_write_time - xTaskGetTickCount() > pdMS_TO_TICKS(SD_WRITE_TIMEOUT_MS);
+        bool writeTimeoutExceeded = xTaskGetTickCount() - last_sd_write_time > pdMS_TO_TICKS(SD_WRITE_TIMEOUT_MS);
         ESP_LOGI(TAG_SD, "writeTimeoutExceeded: %d, last_sd_write_time: %ld, xTaskGetTickCount: %ld", writeTimeoutExceeded, pdTICKS_TO_MS(last_sd_write_time), pdTICKS_TO_MS(xTaskGetTickCount()));
 
         if (buffer_byte_cursor < SD_WRITE_BUF_SIZE && !writeTimeoutExceeded)
@@ -200,7 +198,7 @@ static void sd_write_task(void *pvParameters)
             continue;
         }
 
-        ESP_LOGI(TAG_SD, "Write buffer full, writing to SD card...");
+        ESP_LOGI(TAG_SD, "Write buffer full (%d of %d) or timeout (%ld), writing to SD card...", buffer_byte_cursor, SD_WRITE_BUF_SIZE, pdTICKS_TO_MS(last_sd_write_time - xTaskGetTickCount()));
         size_t written = fwrite(write_buffer, 1, buffer_byte_cursor, f);
         if (written != buffer_byte_cursor)
         {
@@ -208,7 +206,15 @@ static void sd_write_task(void *pvParameters)
         }
         else
         {
-            fflush(f);
+            if (fsync(fileno(f)) != 0)
+            {
+
+                ESP_LOGE(TAG_SD, "fsync failed");
+            }
+            else
+            {
+                ESP_LOGI(TAG_SD, "fsync sucessful");
+            }
         }
         last_sd_write_time = xTaskGetTickCount();
         buffer_byte_cursor = 0;
